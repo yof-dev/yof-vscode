@@ -1,0 +1,56 @@
+# Release for github.com/yof-dev/yof-vscode. Runs only when a version tag (v1.2.3) is pushed, never on a pull request:
+# check, package one .vsix, check its file list, then publish that same file to the VS Code Marketplace and to Open VSX
+# (Cursor, Windsurf, VSCodium and other editors install from there) and attach it to a GitHub release.
+#
+# No stored tokens: both stores use Trusted Publishing (GitHub OIDC, short-lived). The Marketplace publisher "yof" and the
+# Open VSX namespace "yof" each have a policy for yof-dev/yof-vscode, release.yml, environment "marketplaces".
+# The GitHub release uses the workflow's own GITHUB_TOKEN.
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write   # the GitHub release
+  id-token: write   # Trusted Publishing to the Marketplace and Open VSX
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: marketplaces
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The tag matches package.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: test "${TAG#v}" = "$(node -p 'require("./package.json").version')"
+      - run: npm install --no-audit --no-fund
+      - name: The CLI this extension bundles
+        run: npm install --no-save --no-audit --no-fund "@yof/cli@$(node -p 'require("./package.json").yofCli')"
+      - run: npm run check
+      - run: npx vsce package --no-dependencies --out yof.vsix
+      - run: node scripts/check-vsix.mjs yof.vsix
+      - name: Publish to the VS Code Marketplace
+        run: npx vsce publish --oidc --packagePath yof.vsix
+      - name: Publish to Open VSX
+        # Until Eclipse approves the namespace claim (EclipseFdn/open-vsx.org#15226) and the trusted publisher is
+        # registered, this step cannot succeed; it must not stop the Marketplace release or the GitHub release.
+        # Remove continue-on-error once Open VSX publishing is live.
+        continue-on-error: true
+        run: npx ovsx publish --trusted-publishing yof.vsix
+      - name: GitHub release with the .vsix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          v="${TAG#v}"
+          awk -v v="$v" '$0 ~ "^## "v"( |$)" {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md > notes.md
+          gh release create "$TAG" yof.vsix --title "$TAG" --notes-file notes.md

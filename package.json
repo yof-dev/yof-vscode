@@ -1,0 +1,131 @@
+{
+  "name": "yof",
+  "displayName": "yof",
+  "description": "Leaked keys and made-up packages in Problems as you save, with the fix prompt for your AI assistant. Attack your own app from the editor. Local, rules only, no telemetry.",
+  "version": "0.1.0",
+  "publisher": "yof",
+  "license": "Apache-2.0",
+  "author": "Mondaily",
+  "homepage": "https://yof.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yof-dev/yof-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yof-dev/yof-vscode/issues"
+  },
+  "yofCli": "0.2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Testing",
+    "Other"
+  ],
+  "keywords": [
+    "yof",
+    "leaked keys",
+    "secrets",
+    "typosquatting",
+    "ai generated code"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a workspace you have not trusted, yof runs only its own bundled CLI (never one from the project) and yof attack is off.",
+      "restrictedConfigurations": [
+        "yof.cliPath",
+        "yof.attack.envFile"
+      ]
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      { "command": "yof.check", "title": "Check this workspace", "category": "yof" },
+      { "command": "yof.attack", "title": "Attack my app (yof attack)", "category": "yof" },
+      { "command": "yof.cancelAttack", "title": "Stop yof attack", "category": "yof" },
+      { "command": "yof.showOutput", "title": "Show output", "category": "yof" }
+    ],
+    "configuration": {
+      "title": "yof",
+      "properties": {
+        "yof.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run yof check on the workspace folder when you save a file."
+        },
+        "yof.packageLookups": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also check dependencies against npm, PyPI and OSV (package names and pinned versions are sent to those registries). Off: yof makes no network call at all."
+        },
+        "yof.profile": {
+          "type": "string",
+          "enum": ["", "relaxed", "balanced", "strict"],
+          "enumDescriptions": ["Use the profile in .yof.yml (balanced when there is none)", "Only what to fix now", "What to fix now and this week", "Everything, including public keys that are fine"],
+          "default": "",
+          "description": "Which findings to show."
+        },
+        "yof.cliPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "A yof executable to run. Empty: the project's own node_modules/.bin/yof, otherwise the copy bundled with this extension."
+        },
+        "yof.checkTimeoutSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 5,
+          "maximum": 600,
+          "description": "Stop a check that takes longer than this."
+        },
+        "yof.attack.target": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "The address yof attack tests: localhost, or a preview or live host you have proven is yours (see .yof/attack.json)."
+        },
+        "yof.attack.config": {
+          "type": "string",
+          "default": ".yof/attack.json",
+          "description": "The attack config, relative to the workspace folder. It names your app, your consent and the test accounts."
+        },
+        "yof.attack.mode": {
+          "type": "string",
+          "enum": ["full", "light"],
+          "enumDescriptions": ["Every attack group, with test records it creates and deletes", "Read-only requests"],
+          "default": "full",
+          "description": "How much yof attack does."
+        },
+        "yof.attack.envFile": {
+          "type": "string",
+          "default": "",
+          "description": "A KEY=VALUE file with your test accounts' variables. Only names starting with YOF_ are read. Keep it out of git."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
+    "package": "npm run build && vsce package --no-dependencies --out yof.vsix",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.24.2",
+    "ovsx": "^1.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}

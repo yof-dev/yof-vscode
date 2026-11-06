@@ -1,0 +1,9 @@
+**
+!dist/extension.js
+!dist/yof-cli.cjs
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!NOTICE
+!SECURITY.md

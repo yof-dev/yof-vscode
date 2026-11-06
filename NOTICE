@@ -1,0 +1,5 @@
+yof for VS Code
+Copyright 2026 Mondaily
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+It includes the yof command-line tool (@yof/cli, Apache License 2.0, github.com/yof-dev/yof) as dist/yof-cli.cjs.

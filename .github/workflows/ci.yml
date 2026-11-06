@@ -1,0 +1,26 @@
+# CI for the public github.com/yof-dev/yof-vscode repository: type check, tests, build and a packaged .vsix whose
+# file list is checked. Publishes nothing.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: The CLI this extension bundles
+        run: npm install --no-save --no-audit --no-fund "@yof/cli@$(node -p 'require("./package.json").yofCli')"
+      - run: npm run check
+      - run: npx vsce package --no-dependencies --out yof.vsix
+      - run: node scripts/check-vsix.mjs yof.vsix
