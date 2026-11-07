@@ -30,4 +30,18 @@ describe.skipIf(!existsSync(bundled))("the bundled CLI, run like the extension r
     expect(d!.fixPrompt).toMatch(/Where: pay\.ts, line 1\./);
     expect(d!.fixPrompt.includes(key)).toBe(false);
   });
+
+  it("two keys in one file (2026-11-07): every diagnostic of that file carries one combined prompt, masked only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "yof-vscode-"));
+    const live = ["sk", "_live_", rand(28)].join("");
+    const gh = ["gh", "p_", rand(36)].join("");
+    const text = `export const a = "${live}";\nexport const b = "${gh}";\n`;
+    writeFileSync(join(dir, "pay.ts"), text);
+    const cli = resolveCli({ cliPath: "", folder: dir, trusted: false, bundledScript: bundled, execPath: process.execPath });
+    const r = await runCli(cli, checkArgs(DEFAULTS), { cwd: dir, timeoutMs: 30_000 });
+    const d = toDiagnostics(parseCheckJson(r.stdout), { readText: () => text });
+    expect(d).toHaveLength(2);
+    expect(d.every((x) => x.fileCount === 2 && /^yof .*found 2 problems in pay\.ts\./.test(x.filePrompt ?? ""))).toBe(true);
+    expect(d[0]!.filePrompt!.includes(live) || d[0]!.filePrompt!.includes(gh)).toBe(false);
+  });
 });

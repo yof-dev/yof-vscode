@@ -8,15 +8,27 @@
  *     a non-modal question. Cancel any time from the notification: the CLI gets SIGTERM, deletes its test records and
  *     exits; only if it is still running after ATTACK_STOP_GRACE_MS is it killed.
  *   - Nothing here blocks typing: every run is asynchronous, a newer save cancels an older check, and every run has a
- *     time limit. No telemetry: the extension sends nothing anywhere.
+ *     time limit.
+ *   - 0.1.1 (2026-11-07): "yof: Accept this risk…" (a quick fix) asks for a one-sentence reason and writes it to
+ *     .yof/accepted.json, committed with the code; accepted findings stay in Problems as information with the reason
+ *     and leave the open count; "yof: Reopen accepted risk" removes the entry. After a check you start, three buttons:
+ *     Copy fix prompt, Get a signed report, Turn on Patch (the last two only open a page; "(opens soon)" until
+ *     ordering opens).
+ *   - No telemetry unless you opt in: yof.shareScanCount is off by default, asked once after the first finished scan,
+ *     and stays off whenever the editor's own telemetry is off. When on, one request per finished scan with "a scan
+ *     finished", the version, the editor's name and the day (src/scan-count.ts). Nothing else is ever sent.
  */
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import * as vscode from "vscode";
 import { ATTACK_STOP_GRACE_MS, confirmText, parseEnvFile, preflight, stoppedText, summarizeAttack, type AttackSummaryInput } from "./attack";
-import { CheckOutputError, parseCheckJson, statusText, toDiagnostics, type PlainDiagnostic } from "./diagnostics";
+import { CheckOutputError, fileActionTitle, parseCheckJson, statusText, toDiagnostics, type PlainDiagnostic } from "./diagnostics";
 import { LatestRunner, resolveCli, runCli, type CliCommand } from "./process";
 import { attackArgs, checkArgs, readSettings, type Settings } from "./settings";
+import { ACCEPTED_FILE, cleanReason, newEntry, parseAccepted, withEntry, withoutEntry, type AcceptedEntry } from "./accepted";
+import { combinedPrompt, nextStepLabel, nextSteps, nextStepsText, nextStepUrl, type NextStep } from "./next-steps";
+import { SCAN_COUNT_NO, SCAN_COUNT_PROMPT, SCAN_COUNT_YES, sendScanCount, shouldAsk } from "./scan-count";
 
 const DOCS = "https://yof.io/docs#cli";
 const SAVE_DELAY_MS = 400;
@@ -26,6 +38,9 @@ let output: vscode.OutputChannel;
 let collection: vscode.DiagnosticCollection;
 let status: vscode.StatusBarItem;
 let bundledScript = "";
+let extensionVersion = "0.0.0";
+let globalState: vscode.Memento | undefined;
+const SCAN_COUNT_ASKED = "yof.scanCountAsked";
 const runners = new Map<string, LatestRunner>();
 const timers = new Map<string, NodeJS.Timeout>();
 const prompts = new Map<string, PlainDiagnostic[]>();
@@ -52,7 +67,10 @@ function setStatus(text: string, tooltip: string) {
   status.show();
 }
 
-async function check(folder: vscode.WorkspaceFolder): Promise<void> {
+const acceptedPath = (folder: vscode.WorkspaceFolder) => join(folder.uri.fsPath, ...ACCEPTED_FILE.split("/"));
+const acceptedOf = (folder: vscode.WorkspaceFolder): AcceptedEntry[] => parseAccepted(readIf(acceptedPath(folder)));
+
+async function check(folder: vscode.WorkspaceFolder, manual = false): Promise<void> {
   const s = settings(folder);
   const key = folder.uri.toString();
   let runner = runners.get(key);
@@ -70,9 +88,10 @@ async function check(folder: vscode.WorkspaceFolder): Promise<void> {
   }
   try {
     const report = parseCheckJson(result.stdout);
-    const diags = toDiagnostics(report, { readText: (f) => readIf(join(folder.uri.fsPath, f)) });
+    const diags = toDiagnostics(report, { readText: (f) => readIf(join(folder.uri.fsPath, f)), accepted: acceptedOf(folder) });
     publish(folder, diags);
     setStatus(statusText(diags), `yof check (${report.offline ? "offline" : "with package lookups"}, profile ${report.profile}). Click to check again.`);
+    void afterScan(folder, diags, manual);
   } catch (e) {
     const msg = e instanceof CheckOutputError ? e.message : String(e);
     setStatus("yof: needs attention", msg);
@@ -103,25 +122,133 @@ function toVsDiagnostic(d: PlainDiagnostic): vscode.Diagnostic {
   return diag;
 }
 
-function schedule(folder: vscode.WorkspaceFolder, delay = SAVE_DELAY_MS) {
+function schedule(folder: vscode.WorkspaceFolder, delay = SAVE_DELAY_MS, manual = false) {
   const key = folder.uri.toString();
   clearTimeout(timers.get(key));
-  timers.set(key, setTimeout(() => { timers.delete(key); void check(folder); }, delay));
+  timers.set(key, setTimeout(() => { timers.delete(key); void check(folder, manual); }, delay));
+}
+
+/** After a finished scan: the opt-in count (asked once), and the next steps when the person started the check. */
+async function afterScan(folder: vscode.WorkspaceFolder, diags: readonly PlainDiagnostic[], manual: boolean): Promise<void> {
+  const telemetryEnabled = vscode.env.isTelemetryEnabled;
+  const optedIn = settings(folder).shareScanCount;
+  if (globalState && shouldAsk({ asked: !!globalState.get(SCAN_COUNT_ASKED), optedIn, telemetryEnabled })) {
+    await globalState.update(SCAN_COUNT_ASKED, true);
+    void vscode.window.showInformationMessage(SCAN_COUNT_PROMPT, SCAN_COUNT_YES, SCAN_COUNT_NO).then((pick) => {
+      if (pick === SCAN_COUNT_YES) void vscode.workspace.getConfiguration("yof").update("shareScanCount", true, vscode.ConfigurationTarget.Global);
+    });
+  }
+  void sendScanCount({ optedIn, telemetryEnabled, version: extensionVersion, appName: vscode.env.appName });
+  if (!manual) return;
+  const open = diags.filter((d) => !d.accepted && (d.level === "error" || d.level === "warning"));
+  const steps = nextSteps(open.length);
+  const labels = steps.map((s) => nextStepLabel(s));
+  const pick = await vscode.window.showInformationMessage(nextStepsText(open.length), ...labels);
+  const step = steps[labels.indexOf(pick ?? "")];
+  if (step) await runNextStep(step, open);
+}
+
+async function runNextStep(step: NextStep, open: readonly PlainDiagnostic[]): Promise<void> {
+  if (step === "copyPrompts") {
+    const text = combinedPrompt(open.map((d) => d.fixPrompt));
+    if (!text) { void vscode.window.showInformationMessage("yof: these findings have no fix prompt. Open the yof output for details."); return; }
+    await vscode.env.clipboard.writeText(text);
+    void vscode.window.setStatusBarMessage("yof: fix prompt copied. Paste it into your AI assistant.", 4000);
+    return;
+  }
+  await vscode.env.openExternal(vscode.Uri.parse(nextStepUrl(step)));
+}
+
+/** git's user.name for the folder (a local command, no network), or "" when there is none. */
+function gitUserName(cwd: string): Promise<string> {
+  return new Promise((done) => {
+    execFile("git", ["config", "user.name"], { cwd, timeout: 3000, windowsHide: true }, (err, out) => done(err ? "" : String(out).trim().slice(0, 120)));
+  });
+}
+
+type AcceptArgs = { folder: string; file: string; code: string; fingerprint: string; message?: string };
+
+async function acceptRisk(arg?: AcceptArgs): Promise<void> {
+  const target = arg ?? (await pickOpenFinding());
+  if (!target) return;
+  const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(target.folder));
+  if (!folder) return;
+  const reason = cleanReason(await vscode.window.showInputBox({
+    title: "yof: Accept this risk", prompt: `Why is ${target.code} in ${target.file} acceptable? One sentence, saved in ${ACCEPTED_FILE} and shown in yof reports.`,
+    placeHolder: "For example: a revoked test key in a fixture, it cannot be used.", ignoreFocusOut: true,
+    validateInput: (v) => (cleanReason(v) ? null : "Write a reason of 1 to 300 characters."),
+  }));
+  if (!reason) return;
+  let by = await gitUserName(folder.uri.fsPath);
+  if (!by) by = (await vscode.window.showInputBox({ title: "yof: Accept this risk", prompt: "Your name, saved with the reason (git has no user.name here).", ignoreFocusOut: true, validateInput: (v) => (v.trim() ? null : "Write your name.") }))?.trim() ?? "";
+  if (!by) return;
+  const path = acceptedPath(folder);
+  const next = withEntry(readIf(path), newEntry(target, reason, by));
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, ".yof"));
+  await vscode.workspace.fs.writeFile(vscode.Uri.file(path), new TextEncoder().encode(next));
+  void vscode.window.setStatusBarMessage(`yof: risk accepted in ${ACCEPTED_FILE}. Commit the file to share it.`, 5000);
+  schedule(folder, 0);
+}
+
+async function pickOpenFinding(): Promise<AcceptArgs | undefined> {
+  const items: (vscode.QuickPickItem & { arg: AcceptArgs })[] = [];
+  for (const [uri, list] of prompts) {
+    const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(uri));
+    if (!folder) continue;
+    for (const d of list) if (!d.accepted) items.push({ label: `${d.file}:${d.line + 1}`, description: d.code, detail: d.message, arg: { folder: folder.uri.toString(), file: d.file, code: d.code, fingerprint: d.fingerprint } });
+  }
+  if (!items.length) { void vscode.window.showInformationMessage("yof: no open finding to accept. Run a check first."); return undefined; }
+  return (await vscode.window.showQuickPick(items, { title: "yof: Accept this risk", placeHolder: "Which finding?" }))?.arg;
+}
+
+async function reopenRisk(arg?: { folder: string; fingerprint: string }): Promise<void> {
+  let folder = arg ? vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(arg.folder)) : undefined;
+  let fingerprint = arg?.fingerprint;
+  if (!fingerprint) {
+    const items: (vscode.QuickPickItem & { folder: vscode.WorkspaceFolder; fp: string })[] = [];
+    for (const f of vscode.workspace.workspaceFolders ?? []) for (const e of acceptedOf(f)) items.push({ label: `${e.file}`, description: e.rule, detail: `${e.acceptedBy}, ${e.acceptedAt.slice(0, 10)}: ${e.reason}`, folder: f, fp: e.fingerprint });
+    if (!items.length) { void vscode.window.showInformationMessage(`yof: ${ACCEPTED_FILE} has no accepted risks.`); return; }
+    const pick = await vscode.window.showQuickPick(items, { title: "yof: Reopen accepted risk", placeHolder: "Which accepted risk?" });
+    if (!pick) return;
+    folder = pick.folder; fingerprint = pick.fp;
+  }
+  if (!folder || !fingerprint) return;
+  const path = acceptedPath(folder);
+  await vscode.workspace.fs.writeFile(vscode.Uri.file(path), new TextEncoder().encode(withoutEntry(readIf(path), fingerprint)));
+  void vscode.window.setStatusBarMessage("yof: risk reopened. Commit the change to share it.", 5000);
+  schedule(folder, 0);
 }
 
 class FixPromptActions implements vscode.CodeActionProvider {
   static readonly kinds = [vscode.CodeActionKind.QuickFix];
   provideCodeActions(doc: vscode.TextDocument, _range: vscode.Range, ctx: vscode.CodeActionContext): vscode.CodeAction[] {
     const list = prompts.get(doc.uri.toString()) ?? [];
+    const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
     const out: vscode.CodeAction[] = [];
     for (const diag of ctx.diagnostics) {
       if (diag.source !== "yof") continue;
       const code = typeof diag.code === "object" ? String(diag.code.value) : String(diag.code);
       const found = list.find((d) => d.code === code && d.line === diag.range.start.line && d.startColumn === diag.range.start.character);
-      if (!found?.fixPrompt) continue;
-      const action = new vscode.CodeAction("yof: Copy the fix prompt for your AI assistant", vscode.CodeActionKind.QuickFix);
-      action.diagnostics = [diag];
-      action.command = { command: "yof.copyFixPrompt", title: "Copy the fix prompt", arguments: [found.fixPrompt] };
+      if (!found) continue;
+      if (found.fixPrompt && !found.accepted) {
+        const action = new vscode.CodeAction("yof: Copy the fix prompt for your AI assistant", vscode.CodeActionKind.QuickFix);
+        action.diagnostics = [diag];
+        action.command = { command: "yof.copyFixPrompt", title: "Copy the fix prompt", arguments: [found.fixPrompt] };
+        out.push(action);
+      }
+      if (!folder) continue;
+      const accept = new vscode.CodeAction(found.accepted ? "yof: Reopen accepted risk" : "yof: Accept this risk…", vscode.CodeActionKind.QuickFix);
+      accept.diagnostics = [diag];
+      accept.command = found.accepted
+        ? { command: "yof.reopenRisk", title: "Reopen accepted risk", arguments: [{ folder: folder.uri.toString(), fingerprint: found.fingerprint }] }
+        : { command: "yof.acceptRisk", title: "Accept this risk", arguments: [{ folder: folder.uri.toString(), file: found.file, code: found.code, fingerprint: found.fingerprint }] };
+      out.push(accept);
+    }
+    // One prompt for the whole file when it holds two or more problems, so the AI assistant edits it once.
+    const whole = list.find((d) => d.filePrompt && (d.fileCount ?? 0) > 1);
+    if (whole && out.length) {
+      const action = new vscode.CodeAction(fileActionTitle(whole.fileCount!), vscode.CodeActionKind.QuickFix);
+      action.command = { command: "yof.copyFixPrompt", title: "Copy one fix prompt for this file", arguments: [whole.filePrompt] };
       out.push(action);
     }
     return out;
@@ -190,6 +317,8 @@ async function attack(): Promise<void> {
 
 export function activate(context: vscode.ExtensionContext): void {
   bundledScript = context.asAbsolutePath(join("dist", "yof-cli.cjs"));
+  extensionVersion = String((context.extension?.packageJSON as { version?: string } | undefined)?.version ?? "0.0.0");
+  globalState = context.globalState;
   output = vscode.window.createOutputChannel("yof");
   collection = vscode.languages.createDiagnosticCollection("yof");
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -198,7 +327,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     output, collection, status,
-    vscode.commands.registerCommand("yof.check", () => { for (const f of vscode.workspace.workspaceFolders ?? []) schedule(f, 0); }),
+    vscode.commands.registerCommand("yof.check", () => { for (const f of vscode.workspace.workspaceFolders ?? []) schedule(f, 0, true); }),
+    vscode.commands.registerCommand("yof.acceptRisk", (arg?: AcceptArgs) => acceptRisk(arg)),
+    vscode.commands.registerCommand("yof.reopenRisk", (arg?: { folder: string; fingerprint: string }) => reopenRisk(arg)),
+    vscode.commands.registerCommand("yof.signedReport", () => runNextStep("signedReport", [])),
+    vscode.commands.registerCommand("yof.turnOnPatch", () => runNextStep("patch", [])),
     vscode.commands.registerCommand("yof.attack", () => attack()),
     vscode.commands.registerCommand("yof.cancelAttack", () => attackRunner.cancel()),
     vscode.commands.registerCommand("yof.copyFixPrompt", async (prompt: unknown) => {

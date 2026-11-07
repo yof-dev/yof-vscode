@@ -22,6 +22,12 @@ export interface Settings {
   attackMode: AttackMode;
   /** A KEY=VALUE file with the test accounts' variables; only names starting with YOF_ are read. Empty: none. */
   attackEnvFile: string;
+  /**
+   * Opt-in scan count (2026-11-07): OFF unless the person turns it on, and off whenever the editor's own telemetry
+   * setting is off. When on, one request per finished scan: "a scan finished", the extension version, the editor's
+   * name and the day. No code, file names, paths, findings or ids (src/scan-count.ts).
+   */
+  shareScanCount: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -34,6 +40,7 @@ export const DEFAULTS: Settings = {
   attackConfig: ".yof/attack.json",
   attackMode: "full",
   attackEnvFile: "",
+  shareScanCount: false,
 };
 
 /** The setting ids, as contributed in package.json (yof.<key>). */
@@ -47,6 +54,7 @@ export const SETTING_KEYS: Record<keyof Settings, string> = {
   attackConfig: "attack.config",
   attackMode: "attack.mode",
   attackEnvFile: "attack.envFile",
+  shareScanCount: "shareScanCount",
 };
 
 export function readSettings(get: (key: string) => unknown): Settings {
@@ -65,6 +73,7 @@ export function readSettings(get: (key: string) => unknown): Settings {
     attackConfig: text("attackConfig") || DEFAULTS.attackConfig,
     attackMode: mode === "light" ? "light" : "full",
     attackEnvFile: text("attackEnvFile"),
+    shareScanCount: bool("shareScanCount"),
   };
 }
 

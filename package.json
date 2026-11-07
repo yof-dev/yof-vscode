@@ -1,8 +1,8 @@
 {
   "name": "yof",
   "displayName": "yof",
-  "description": "Leaked keys and made-up packages in Problems as you save, with the fix prompt for your AI assistant. Attack your own app from the editor. Local, rules only, no telemetry.",
-  "version": "0.1.0",
+  "description": "Security checks for code written with AI builders, in VS Code, Cursor and Windsurf: leaked secrets and made-up packages in Problems as you save, with a fix prompt to paste into your AI assistant. Accept a risk with a reason, attack your own app, get a signed report with an SBOM. Local rules, no telemetry unless you opt in.",
+  "version": "0.1.1",
   "publisher": "yof",
   "license": "Apache-2.0",
   "author": "Mondaily",
@@ -25,10 +25,16 @@
   ],
   "keywords": [
     "yof",
-    "leaked keys",
+    "security",
     "secrets",
-    "typosquatting",
-    "ai generated code"
+    "leaked keys",
+    "sbom",
+    "fix prompt",
+    "ai generated code",
+    "ai builders",
+    "cursor",
+    "windsurf",
+    "typosquatting"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -50,7 +56,11 @@
       { "command": "yof.check", "title": "Check this workspace", "category": "yof" },
       { "command": "yof.attack", "title": "Attack my app (yof attack)", "category": "yof" },
       { "command": "yof.cancelAttack", "title": "Stop yof attack", "category": "yof" },
-      { "command": "yof.showOutput", "title": "Show output", "category": "yof" }
+      { "command": "yof.showOutput", "title": "Show output", "category": "yof" },
+      { "command": "yof.acceptRisk", "title": "Accept this risk…", "category": "yof" },
+      { "command": "yof.reopenRisk", "title": "Reopen accepted risk", "category": "yof" },
+      { "command": "yof.signedReport", "title": "Get a signed report", "category": "yof" },
+      { "command": "yof.turnOnPatch", "title": "Turn on Patch", "category": "yof" }
     ],
     "configuration": {
       "title": "yof",
@@ -106,6 +116,13 @@
           "type": "string",
           "default": "",
           "description": "A KEY=VALUE file with your test accounts' variables. Only names starting with YOF_ are read. Keep it out of git."
+        },
+        "yof.shareScanCount": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "tags": ["telemetry", "usesOnlineServices"],
+          "description": "Help yof count scans: after each finished scan, send only 'a scan finished', the extension version, the editor's name and the day. No code, file names or paths. Off by default, and always off while your editor's telemetry setting is off."
         }
       }
     }

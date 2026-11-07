@@ -6,6 +6,8 @@
  * assistant). Nothing is rewritten here, and a value is only ever the masked one the CLI prints.
  */
 
+import { acceptFingerprint, type AcceptedEntry } from "./accepted";
+
 export type Severity = "fix_now" | "fix_week" | "info";
 export type Profile = "relaxed" | "balanced" | "strict";
 export type DiagnosticLevel = "error" | "warning" | "information";
@@ -13,7 +15,11 @@ export type DiagnosticLevel = "error" | "warning" | "information";
 export interface KeyJson {
   file: string; line: number; column: number; rule: string; name: string; severity: Severity; masked: string;
   why?: string; fixPrompt?: string;
+  /** Other rules that caught the same value (CLI 2026-11-07): one finding, named here. */
+  alsoMatched?: string[];
 }
+/** One combined prompt for every problem in one file (CLI 2026-11-07), for files with two or more. */
+export interface FilePromptJson { file: string; count: number; prompt: string }
 export interface PackageJson {
   file: string; name: string; ecosystem: "npm" | "pypi"; issue: string; severity: "fix_now" | "fix_week"; message: string;
   version?: string; why?: string; fixPrompt?: string;
@@ -21,6 +27,8 @@ export interface PackageJson {
 export interface CheckJson {
   tool: "yof"; version: string; profile: Profile; offline: boolean;
   keys: KeyJson[]; packages: PackageJson[];
+  /** Absent from a CLI older than 2026-11-07. */
+  filePrompts?: FilePromptJson[];
   counts: { fix_now: number; fix_week: number; info: number };
   failed: boolean;
 }
@@ -38,6 +46,13 @@ export interface PlainDiagnostic {
   message: string;
   /** Ready to paste into an AI assistant; empty when the CLI sent none. */
   fixPrompt: string;
+  /** The .yof/accepted.json fingerprint of this finding (src/accepted.ts). */
+  fingerprint: string;
+  /** Set when .yof/accepted.json accepts it: shown as information with the reason, not counted as open. */
+  accepted?: { reason: string; acceptedBy: string; acceptedAt: string };
+  /** One prompt for every problem in this file, and how many it covers; only when the file has two or more. */
+  filePrompt?: string;
+  fileCount?: number;
 }
 
 export class CheckOutputError extends Error {}
@@ -73,6 +88,9 @@ export function parseCheckJson(text: string): CheckJson {
       throw new CheckOutputError("yof printed a package finding this extension does not know.");
     }
   }
+  if (raw.filePrompts !== undefined && (!Array.isArray(raw.filePrompts) || raw.filePrompts.some((x) => !isObj(x) || !isStr(x.file) || !isInt(x.count) || !isStr(x.prompt)))) {
+    throw new CheckOutputError("yof printed file prompts this extension does not know.");
+  }
   return raw as unknown as CheckJson;
 }
 
@@ -105,6 +123,12 @@ export interface MapOptions {
   profile?: Profile;
   /** Reads a checked file (relative path) so ranges cover the whole key or package name; null when it can't. */
   readText?: (file: string) => string | null;
+  /** The workspace's .yof/accepted.json entries. */
+  accepted?: readonly AcceptedEntry[];
+}
+
+function acceptedNote(a: { reason: string; acceptedBy: string; acceptedAt: string }): string {
+  return `Accepted${a.acceptedBy ? ` by ${a.acceptedBy}` : ""}${a.acceptedAt ? ` on ${a.acceptedAt.slice(0, 10)}` : ""}: ${a.reason}`;
 }
 
 export function toDiagnostics(report: CheckJson, o: MapOptions = {}): PlainDiagnostic[] {
@@ -115,35 +139,58 @@ export function toDiagnostics(report: CheckJson, o: MapOptions = {}): PlainDiagn
     return cache.get(file)!;
   };
   const out: PlainDiagnostic[] = [];
+  const perFile = new Map((report.filePrompts ?? []).filter((x) => x.count > 1).map((x) => [norm(x.file), x] as const));
+  const withFile = (d: PlainDiagnostic): PlainDiagnostic => {
+    const fp = perFile.get(d.file);
+    return fp ? { ...d, filePrompt: fp.prompt, fileCount: fp.count } : d;
+  };
   for (const k of report.keys) {
     if (!visibleIn(profile, k.severity)) continue;
     const file = norm(k.file);
     const line = Math.max(0, k.line - 1);
     const span = keySpan(linesOf(file)?.[line] ?? null, k.column, k.masked);
     const why = k.why ? ` ${k.why}` : "";
-    out.push({
-      file, line, startColumn: span.start, endColumn: span.end, level: LEVEL[k.severity], code: k.rule,
-      message: `${k.name} (${LABEL[k.severity]}): ${k.masked}.${why}`, fixPrompt: k.fixPrompt ?? "",
-    });
+    const lineText = linesOf(file)?.[line] ?? "";
+    const fingerprint = acceptFingerprint(k.rule, file, lineText);
+    // One finding per value (CLI 2026-11-07): an acceptance made for a rule folded into this one still applies.
+    const folded = Array.isArray(k.alsoMatched) ? k.alsoMatched.filter(isStr) : [];
+    const accepted = (o.accepted ?? []).find((a) => a.file === file && ((a.rule === k.rule && a.fingerprint === fingerprint)
+      || (folded.includes(a.rule) && a.fingerprint === acceptFingerprint(a.rule, file, lineText))));
+    const also = folded.length ? ` Also matched: ${folded.join(", ")}.` : "";
+    const message = `${k.name} (${LABEL[k.severity]}): ${k.masked}.${why}${also}`;
+    out.push(withFile({
+      file, line, startColumn: span.start, endColumn: span.end, level: accepted ? "information" : LEVEL[k.severity], code: k.rule,
+      message: accepted ? `${acceptedNote(accepted)}. ${message}` : message, fixPrompt: k.fixPrompt ?? "", fingerprint,
+      ...(accepted ? { accepted: { reason: accepted.reason, acceptedBy: accepted.acceptedBy, acceptedAt: accepted.acceptedAt } } : {}),
+    }));
   }
   for (const p of report.packages) {
     if (!visibleIn(profile, p.severity)) continue;
     const file = norm(p.file);
     const text = linesOf(file);
     const at = text ? findDependencyLine(text.join("\n"), p.name) : null;
-    out.push({
-      file, line: at?.line ?? 0, startColumn: at?.start ?? 0, endColumn: at?.end ?? 1, level: LEVEL[p.severity], code: `package.${p.issue}`,
-      message: `${p.name}${p.version ? `@${p.version}` : ""} (${p.ecosystem === "npm" ? "npm" : "PyPI"}, ${LABEL[p.severity]}): ${p.why ?? p.message}`,
-      fixPrompt: p.fixPrompt ?? "",
-    });
+    const code = `package.${p.issue}`;
+    const fingerprint = acceptFingerprint(code, file, `${p.ecosystem}:${p.name}`);
+    const accepted = (o.accepted ?? []).find((a) => a.fingerprint === fingerprint && a.rule === code && a.file === file);
+    const message = `${p.name}${p.version ? `@${p.version}` : ""} (${p.ecosystem === "npm" ? "npm" : "PyPI"}, ${LABEL[p.severity]}): ${p.why ?? p.message}`;
+    out.push(withFile({
+      file, line: at?.line ?? 0, startColumn: at?.start ?? 0, endColumn: at?.end ?? 1, level: accepted ? "information" : LEVEL[p.severity], code,
+      message: accepted ? `${acceptedNote(accepted)}. ${message}` : message, fixPrompt: p.fixPrompt ?? "", fingerprint,
+      ...(accepted ? { accepted: { reason: accepted.reason, acceptedBy: accepted.acceptedBy, acceptedAt: accepted.acceptedAt } } : {}),
+    }));
   }
   return out;
 }
 
+/** The quick fix that copies the combined prompt of a file. */
+export const fileActionTitle = (n: number) => `yof: Copy one fix prompt for all ${n} problems in this file`;
+
 /** The status bar text: counts of what the profile shows. Never a date. */
 export function statusText(d: readonly PlainDiagnostic[]): string {
-  const now = d.filter((x) => x.level === "error").length;
-  const week = d.filter((x) => x.level === "warning").length;
-  if (!now && !week) return "yof: nothing to fix";
-  return `yof: ${[now ? `${now} fix now` : "", week ? `${week} this week` : ""].filter(Boolean).join(", ")}`;
+  const now = d.filter((x) => !x.accepted && x.level === "error").length;
+  const week = d.filter((x) => !x.accepted && x.level === "warning").length;
+  const acc = d.filter((x) => x.accepted).length;
+  const tail = acc ? `, ${acc} accepted` : "";
+  if (!now && !week) return `yof: nothing to fix${tail}`;
+  return `yof: ${[now ? `${now} fix now` : "", week ? `${week} this week` : ""].filter(Boolean).join(", ")}${tail}`;
 }
