@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.1.1 (2026-11-07)
+## 0.1.2 (2026-11-07)
+
+The first release with these changes. (0.1.1 was tagged but never published: one test read a file that only exists in yof's private repository.)
+
 
 - A file with two or more problems gets one more quick fix: "Copy one fix prompt for all N problems in this file", so your AI assistant edits the file once. The single prompt stays.
 - A finding that several rules caught says so ("Also matched: ...") instead of showing twice.

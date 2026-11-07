@@ -1,7 +1,7 @@
 /**
  * 0.1.1 (2026-11-07): accepted risks in .yof/accepted.json, the buttons after a check, and the opt-in scan count.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { acceptFingerprint, cleanReason, newEntry, parseAccepted, withEntry, withoutEntry } from "../src/accepted";
@@ -24,8 +24,10 @@ const AT = "2026-11-07T10:00:00.000Z";
 
 describe("accepted.json in the editor", () => {
   it("the same fingerprint recipe as the yof CLI and yof's reports", () => {
-    const cli = readFileSync(join(__dirname, "..", "..", "yof", "src", "accepted.ts"), "utf8");
-    expect(cli).toContain("yof-accept/1\\n${rule}\\n${file.replace(/\\\\/g, \"/\")}\\n${content.trim()}");
+    // The CLI source sits beside this folder only in the private monorepo; the public yof-vscode repository has just
+    // the extension, so there the check covers the extension's own recipe.
+    const cliPath = join(__dirname, "..", "..", "yof", "src", "accepted.ts");
+    if (existsSync(cliPath)) expect(readFileSync(cliPath, "utf8")).toContain("yof-accept/1\\n${rule}\\n${file.replace(/\\\\/g, \"/\")}\\n${content.trim()}");
     expect(read("src/accepted.ts")).toContain("yof-accept/1\\n${rule}\\n${file.replace(/\\\\/g, \"/\")}\\n${content.trim()}");
   });
   it("an accepted finding becomes information with the reason and leaves the open count; a changed line is open again", () => {
@@ -113,11 +115,11 @@ describe("opt-in scan count", () => {
     expect(await sendScanCount({ optedIn: true, telemetryEnabled: true, version: "0.1.1", fetch: async () => { throw new Error("offline"); } })).toBe(false);
   });
   it("the listing says so honestly, and the title names no other product", () => {
-    expect(pkg.version).toBe("0.1.1");
+    expect(pkg.version).toBe("0.1.2");
     expect(pkg.displayName).toBe("yof");
     expect(pkg.description).toMatch(/no telemetry unless you opt in/i);
     for (const w of ["Cursor", "Windsurf", "AI builders", "secrets", "SBOM", "fix prompt"]) expect(pkg.description).toContain(w);
     expect(read("README.md")).toMatch(/## Privacy[\s\S]*No telemetry unless you opt in/);
-    expect(read("CHANGELOG.md")).toMatch(/## 0\.1\.1/);
+    expect(read("CHANGELOG.md")).toMatch(/## 0\.1\.2/);
   });
 });

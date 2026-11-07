@@ -2,7 +2,7 @@
   "name": "yof",
   "displayName": "yof",
   "description": "Security checks for code written with AI builders, in VS Code, Cursor and Windsurf: leaked secrets and made-up packages in Problems as you save, with a fix prompt to paste into your AI assistant. Accept a risk with a reason, attack your own app, get a signed report with an SBOM. Local rules, no telemetry unless you opt in.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "yof",
   "license": "Apache-2.0",
   "author": "Mondaily",
