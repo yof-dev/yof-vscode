@@ -18,9 +18,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
+      # npm ci from the committed package-lock.json: the exact tree the tests ran with. A fresh resolve on the npm that
+      # ships with Node 22 (10.9) stops with "Cannot read properties of null (reading 'edgesOut')" on vitest 4 (ci #4).
+      - run: npm ci --no-audit --no-fund
       - name: The CLI this extension bundles
-        run: npm install --no-save --no-audit --no-fund "@yof/cli@$(node -p 'require("./package.json").yofCli')"
+        # In its own folder, so the project's tree is never re-resolved; esbuild.mjs reads YOF_CLI_DIR first.
+        run: |
+          npm install --prefix "$RUNNER_TEMP/yof-cli" --no-audit --no-fund "@yof/cli@$(node -p 'require("./package.json").yofCli')"
+          echo "YOF_CLI_DIR=$RUNNER_TEMP/yof-cli/node_modules/@yof/cli" >> "$GITHUB_ENV"
       - run: npm run check
       - run: npx vsce package --no-dependencies --out yof.vsix
       - run: node scripts/check-vsix.mjs yof.vsix
